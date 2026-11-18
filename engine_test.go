@@ -84,7 +84,8 @@ func TestProvider(t *testing.T) {
 				t.Error("request parameters")
 			}
 			if request.Model == "working" {
-				fmt.Fprintln(w, `data: {"type":"response.completed"}`)
+				fmt.Fprintln(w, `data: {"type":"response.output_text.delta","delta":"partial"}`)
+				fmt.Fprintln(w, `data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"你好\n完成"}]}]}}`)
 			} else {
 				fmt.Fprintln(w, `data: {"type":"response.failed"}`)
 			}
@@ -104,7 +105,7 @@ func TestProvider(t *testing.T) {
 	http.DefaultTransport = tr
 	hostCall = func(method string, payload, target any) error {
 		if method == "host.auth.list" {
-			return json.Unmarshal([]byte(`{"files":[{"auth_index":"one","provider":"codex"},{"auth_index":"two","provider":"other"},{"auth_index":"three","type":"codex","account_type":"api_key"}]}`), target)
+			return json.Unmarshal([]byte(`{"files":[{"auth_index":"one","provider":"codex","unavailable":true},{"auth_index":"two","provider":"other"},{"auth_index":"three","type":"codex","account_type":"api_key"}]}`), target)
 		}
 		if payload.(map[string]string)["auth_index"] != "one" {
 			t.Fatal("wrong credential index")
@@ -112,17 +113,40 @@ func TestProvider(t *testing.T) {
 		return json.Unmarshal([]byte(`{"json":{"tokens":{"access_token":"fixture","account_id":"demo","proxy_url":"direct"}}}`), target)
 	}
 	list, err := accounts()
-	if err != nil || len(list) != 1 || list[0].ID != "one" {
+	if err != nil || len(list) != 1 || list[0].ID != "one" || list[0].Disabled || !list[0].Unavailable {
 		t.Fatal(list, err)
 	}
 	q, err := readQuota(context.Background(), "one")
 	if err != nil || q.Plan != "team" || q.Primary.Remaining != 85 {
 		t.Fatal(q, err)
 	}
-	if err := activate(context.Background(), "one", Task{Model: "working", Effort: "medium"}); err != nil {
-		t.Fatal(err)
+	if reply, err := activate(context.Background(), "one", Task{Model: "working", Effort: "medium"}); err != nil || reply != "你好\n完成" {
+		t.Fatal(reply, err)
 	}
-	if err := activate(context.Background(), "one", Task{Model: "failed", Effort: "medium"}); err == nil {
+	if _, err := activate(context.Background(), "one", Task{Model: "failed", Effort: "medium"}); err == nil {
 		t.Fatal("failed stream reported success")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e := &Engine{ctx: ctx, file: filepath.Join(t.TempDir(), "state.json")}
+	task := Task{Model: "working", Models: []string{"working", "failed"}, Effort: "medium", Mode: "auto"}
+	if err := queue(&e.state, task, []string{"one"}, "manual", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	e.wg.Add(1)
+	go e.worker()
+	defer func() { cancel(); e.wg.Wait() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		e.mu.Lock()
+		run := e.state.Runs[0]
+		e.mu.Unlock()
+		if run.Status == "partial" {
+			if len(run.Records) != 2 || run.Records[0].Model != "working" || run.Records[0].Reply == nil || *run.Records[0].Reply != "你好\n完成" || run.Records[1].Model != "failed" {
+				t.Fatal(run.Records)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("multi-model run did not finish")
 }

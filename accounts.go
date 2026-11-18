@@ -17,8 +17,8 @@ import (
 var hostCall = nativeHost
 
 type Account struct {
-	ID, Email, Label, Plan string
-	Disabled               bool
+	ID, File, Email, Label, Plan string
+	Disabled, Unavailable        bool
 }
 type Window struct {
 	Remaining float64
@@ -51,7 +51,7 @@ func accounts() ([]Account, error) {
 		if name == "" {
 			name = a.Name
 		}
-		list = append(list, Account{ID: a.AuthIndex, Email: name, Label: a.Label, Disabled: a.Disabled || a.Unavailable})
+		list = append(list, Account{ID: a.AuthIndex, File: a.Name, Email: name, Label: a.Label, Disabled: a.Disabled, Unavailable: a.Unavailable})
 	}
 	return list, nil
 }
@@ -173,29 +173,71 @@ func readQuota(ctx context.Context, id string) (Quota, error) {
 	return q, nil
 }
 
-func activate(ctx context.Context, id string, t Task) error {
+func activate(ctx context.Context, id string, t Task) (string, error) {
 	resp, err := upstream(ctx, id, false, t)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 4096), 8<<20)
+	var text strings.Builder
+	appendText := func(s string) {
+		const limit = 32768
+		left := limit - text.Len()
+		if left <= 0 {
+			return
+		}
+		if len(s) > left {
+			s = strings.ToValidUTF8(s[:left], "") + "…（回答已截断）"
+		}
+		text.WriteString(s)
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		var event struct{ Type string }
+		var event struct {
+			Type, Delta string
+			Response    struct {
+				Output []struct {
+					Content []struct{ Type, Text, Refusal string }
+				}
+			}
+		}
 		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) != nil {
 			continue
 		}
 		switch event.Type {
+		case "response.output_text.delta", "response.refusal.delta":
+			appendText(event.Delta)
 		case "response.completed":
-			return nil
+			final := false
+			for _, item := range event.Response.Output {
+				for _, part := range item.Content {
+					content := part.Text
+					if part.Type == "refusal" {
+						content = part.Refusal
+					} else if part.Type != "output_text" {
+						continue
+					}
+					if content == "" {
+						continue
+					}
+					if !final {
+						text.Reset()
+						final = true
+					} else {
+						appendText("\n")
+					}
+					appendText(content)
+				}
+			}
+			return text.String(), nil
 		case "response.failed", "response.incomplete", "error":
-			return errors.New("模型请求失败或未完成")
+			return text.String(), errors.New("模型请求失败或未完成")
 		}
 	}
-	return errors.New("连接结束前未收到完成事件")
+	return text.String(), errors.New("连接结束前未收到完成事件")
 }

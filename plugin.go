@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	version      = "0.2.0"
+	version      = "0.2.1"
 	pluginName   = "Codex 唤醒任务"
 	resourcePath = "/v0/resource/plugins/cpa-codex-wakeup/overview"
 )

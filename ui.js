@@ -17,6 +17,22 @@ async function api(action,data={}){
  if(!res.ok){let detail;try{detail=(await res.json()).error}catch{}throw Error(detail||`CPA HTTP ${res.status}`)}return res.json();
 }
 function report(err){(modal.open?$('error'):$('notice')).textContent=err.message}
+function taskModels(t){return t.Models?.length?t.Models:[t.Model].filter(Boolean)}
+async function systemModels(accounts){
+ let catalog={};
+ try{catalog=await api('models')}catch{/* Older CPA builds expose the credential catalog over the management API. */}
+ const missing=accounts.filter(a=>!a.Disabled&&!Array.isArray(catalog[a.ID]));
+ let cursor=0,failed=0;
+ async function load(){while(cursor<missing.length){
+  const a=missing[cursor++];
+  try{const res=await fetch('/v0/management/auth-files/models?'+new URLSearchParams({name:a.File}),{headers:key?{Authorization:'Bearer '+key}:{},cache:'no-store'});
+   if(!res.ok)throw Error();const data=await res.json();catalog[a.ID]=data.models.map(m=>m.id).filter(Boolean);
+  }catch{failed++}
+ }}
+ await Promise.all(Array.from({length:Math.min(4,missing.length)},load));
+ const all=[...new Set(accounts.filter(a=>!a.Disabled).flatMap(a=>catalog[a.ID]||[]))].sort();
+ return {all,catalog,note:failed?'部分账号的模型目录读取失败，可重新打开编辑器重试。':all.length?'':'CPA 尚未返回 Codex 模型。'};
+}
 function guarded(fn){return async(...args)=>{try{await fn(...args)}catch(err){report(err)}}}
 async function reload(){const data=await api();state=data.state;$('notice').textContent=data.storageError||'';render()}
 function summary(t){
@@ -25,8 +41,8 @@ function summary(t){
 }
 function render(){
  const tasks=state.Tasks||[];$('count').textContent=`${tasks.length} 个任务`;
- $('tasks').innerHTML=tasks.map(t=>`<article><header><h3>${esc(t.Name)} <small>${t.Enabled?'已启用':'已停用'}</small></h3><div class="row">${[['run','立即执行'],['edit','编辑'],['toggle',t.Enabled?'停用':'启用'],['delete','删除']].map(([a,n])=>button(n,`data-action="${a}" data-id="${esc(t.ID)}"`)).join('')}</div></header><p>${esc(summary(t))} · ${esc(t.Zone)} · ${t.Pool?'API 服务账号池':`${t.IDs?.length||0} 个账号`}</p><small>${esc(t.Model)} · ${esc(t.Effort||'默认强度')} · ${t.Mode==='confirm'?'执行前确认':'直接执行'}</small></article>`).join('')||'<p class="muted">尚无任务，点击「新建任务」设置首次唤醒。</p>';
- $('runs').innerHTML=[...(state.Runs||[])].reverse().map(r=>`<details data-run="${esc(r.ID)}"><summary>${esc(r.Name)} · ${esc(statuses[r.Status]||r.Status)} · ${esc(when(r.At,r.Task.Zone))}</summary><small>${esc(kinds[r.Source]||'手动执行')} · ${esc(r.Task.Model)}</small>${(r.Records||[]).map(x=>`<p>${esc(x.Account)} · ${esc(statuses[x.Status]||x.Status)}</p>`).join('')}</details>${r.Status==='pending'?`<div class="row"><small>确认截止 ${esc(when(r.Deadline,r.Task.Zone))}</small>${button('确认执行',`data-action="approve" data-id="${esc(r.ID)}"`)}${button('跳过',`data-action="skip" data-id="${esc(r.ID)}"`)}</div>`:''}`).join('')||'<p class="muted">暂无执行记录。</p>';
+ $('tasks').innerHTML=tasks.map(t=>`<article><header><h3>${esc(t.Name)} <small>${t.Enabled?'已启用':'已停用'}</small></h3><div class="row">${[['run','立即执行'],['edit','编辑'],['toggle',t.Enabled?'停用':'启用'],['delete','删除']].map(([a,n])=>button(n,`data-action="${a}" data-id="${esc(t.ID)}"`)).join('')}</div></header><p>${esc(summary(t))} · ${esc(t.Zone)} · ${t.Pool?'API 服务账号池':`${t.IDs?.length||0} 个账号`}</p><small>${esc(taskModels(t).join('、'))} · ${esc(t.Effort||'默认强度')} · ${t.Mode==='confirm'?'执行前确认':'直接执行'}</small></article>`).join('')||'<p class="muted">尚无任务，点击「新建任务」设置首次唤醒。</p>';
+ $('runs').innerHTML=[...(state.Runs||[])].reverse().map(r=>`<details data-run="${esc(r.ID)}"><summary>${esc(r.Name)} · ${esc(statuses[r.Status]||r.Status)} · ${esc(when(r.At,r.Task.Zone))}</summary><small>${esc(kinds[r.Source]||'手动执行')} · ${esc(taskModels(r.Task).join('、'))}</small><h4>任务提示词</h4><pre>${esc(r.Task.Prompt?.trim()?r.Task.Prompt:'hi')}</pre>${(r.Records||[]).map(x=>`<article><strong>${esc(x.Account)} · ${esc(x.Model||r.Task.Model)} · ${esc(statuses[x.Status]||x.Status)}</strong><h4>回答</h4><pre>${esc(x.Reply??'旧版本未保存回答内容。')||'未收到文本回答。'}</pre></article>`).join('')}</details>${r.Status==='pending'?`<div class="row"><small>确认截止 ${esc(when(r.Deadline,r.Task.Zone))}</small>${button('确认执行',`data-action="approve" data-id="${esc(r.ID)}"`)}${button('跳过',`data-action="skip" data-id="${esc(r.ID)}"`)}</div>`:''}`).join('')||'<p class="muted">暂无执行记录。</p>';
 }
 $('dashboard').onclick=guarded(async ev=>{const b=ev.target.closest('[data-action]');if(!b||b.disabled)return;const {action,id}=b.dataset;
  if(action==='edit')return openTask(state.Tasks.find(t=>t.ID===id));if(action==='delete'&&!confirm('删除这个唤醒任务？'))return;
@@ -39,10 +55,11 @@ $('save').onclick=guarded(async()=>{if(busy)return;busy=true;$('save').disabled=
 modal.onclose=guarded(async()=>{previewSeq++;clearTimeout(previewTimer);saveAction=null;if(returnToTask){const task=returnToTask;returnToTask=null;await openTask(task)}});
 function defaults(){const p=state.Presets[0];return {ID:'',Name:'',Enabled:true,Pool:false,IDs:[],Model:p.Model,Effort:p.Default,Kind:'weekly',Days:[1,2,3,4,5],Clock:'06:00',Zone:'Asia/Shanghai',Hours:6,Window:'either',Delay:0,Mode:'auto',Timeout:5,Prompt:''}}
 async function openTask(task){
- accountList=await api('accounts');draft=structuredClone(task||defaults());draft.IDs??=[];draft.Days??=[];const t=draft;
+ accountList=await api('accounts');const directory=await systemModels(accountList);draft=structuredClone(task||defaults());draft.IDs??=[];draft.Days??=[];const t=draft;
+ t.Models=task?taskModels(t):[];if(!task){t.Model='';t.Effort=''}
  open(task?.ID?'编辑 Codex 唤醒任务':'新建 Codex 唤醒任务',field('任务名称',input('name','text',t.Name,'placeholder="例如：工作日上午唤醒" maxlength="90"'))+
  `<fieldset><legend>状态</legend><div id="enabled" class="row"></div></fieldset><fieldset><legend>选择账号</legend><div class="row" id="source"></div><div id="picker"></div><small id="poolInfo"></small></fieldset>`+
- `<fieldset><legend>模型预设</legend><div class="grid"><select aria-label="模型" id="model"></select><select aria-label="推理强度" id="effort"></select></div><div class="row spread"><small id="actual"></small>${button('管理模型预设','id="editModels"')}</div></fieldset><fieldset><legend>调度方式</legend><div class="row" id="kind"></div><div id="schedule"></div></fieldset>`+
+ `<fieldset><legend>选择模型</legend><p>可多选，每个账号将对每个选中模型分别发送一次提示词。</p><div class="grid" id="model"></div><small>${esc(directory.note)}</small>${field('推理强度','<select id="effort"></select>')}<div class="row spread"><small id="actual"></small>${button('管理模型预设','id="editModels"')}</div></fieldset><fieldset><legend>调度方式</legend><div class="row" id="kind"></div><div id="schedule"></div></fieldset>`+
  field('时区',input('zone','text',t.Zone))+field('执行模式',`<select id="mode">${options([['auto','直接执行'],['confirm','执行前确认']],t.Mode)}</select>`)+
  `<div id="timeoutField">${field('等待确认（分钟）',input('timeout','number',t.Timeout,'min="1" max="1440"'))}</div>`+
  field('唤醒提示词',`<textarea id="prompt" rows="3" placeholder="留空使用 hi">${esc(t.Prompt)}</textarea>`)+
@@ -52,12 +69,22 @@ async function openTask(task){
  $('editModels').onclick=()=>{returnToTask=t;$('models').onclick()};
  function segments(id,entries,val,fn){const box=$(id);box.innerHTML=entries.map(([v,l])=>button(l,`data-v="${v}" aria-pressed="${v===val}"`)).join('');box.onclick=e=>{const b=e.target.closest('button');if(b)fn(b.dataset.v)}}
  function status(){segments('enabled',[['yes','启用'],['no','停用']],t.Enabled?'yes':'no',v=>{t.Enabled=v==='yes';status()})}status();
- function source(){segments('source',[['manual','手动选账号'],['pool','API 服务账号池']],t.Pool?'pool':'manual',v=>{t.Pool=v==='pool';source();requestPreview()});$('picker').hidden=t.Pool;$('poolInfo').textContent=t.Pool?`运行时使用插件账号池，当前 ${(state.Pool||[]).length} 个账号。`:''}source();
- picker($('picker'),t.IDs,()=>requestPreview());
- const presets=[...state.Presets];if(!presets.some(p=>p.Model===t.Model))presets.push({Name:t.Model,Model:t.Model,Efforts:[t.Effort],Default:t.Effort});
- $('model').innerHTML=options(presets.map(p=>[p.Model,p.Name]),t.Model);
- function effort(){const p=presets.find(p=>p.Model===t.Model);const choices=[...new Set([...(p.Efforts||[]),t.Effort])];const labels={low:'低',medium:'中',high:'高',xhigh:'极高'};$('effort').innerHTML=options(choices.map(v=>[v,labels[v]||v||'模型默认']),t.Effort);$('actual').textContent='实际传入模型值：'+t.Model}
- $('model').onchange=()=>{t.Model=$('model').value;t.Effort=presets.find(p=>p.Model===t.Model).Default;effort()};$('effort').onchange=()=>{t.Effort=$('effort').value};effort();
+ function drawModels(){
+  const ids=t.Pool?(state.Pool||[]):t.IDs;
+  const available=directory.all.filter(m=>ids.every(id=>directory.catalog[id]?.includes(m)));
+  const known=ids.filter(id=>directory.catalog[id]?.length);
+  const fallback=directory.all.filter(m=>known.every(id=>directory.catalog[id].includes(m)));
+  const shown=[...new Set([...available,...(known.length<ids.length?fallback:[]),...state.Presets.map(p=>p.Model),...t.Models])];
+  const preset=id=>state.Presets.find(p=>p.Model===id);
+  $('model').innerHTML=shown.map(m=>`<label><input type="checkbox" value="${esc(m)}" ${t.Models.includes(m)?'checked':''}> ${esc(preset(m)?.Name||m)}${available.includes(m)?'':'（当前目录未确认）'}</label>`).join('')||'<small>所选账号暂无共同模型。</small>';
+  let efforts=['low','medium','high','xhigh'];
+  if(t.Models.length){const lists=t.Models.map(m=>preset(m)?.Efforts||efforts);efforts=lists[0].filter(v=>lists.every(list=>list.includes(v)))}
+  const choices=[...new Set(['',...efforts,t.Effort])];$('effort').innerHTML=options(choices.map(v=>[v,v||'模型默认']),t.Effort);$('actual').textContent='已选模型：'+(t.Models.join('、')||'无');
+ }
+ $('model').onchange=e=>{const m=e.target.value;t.Models=e.target.checked?[...t.Models,m]:t.Models.filter(v=>v!==m);t.Model=t.Models[0]||'';t.Effort=t.Models.length===1?(state.Presets.find(p=>p.Model===t.Model)?.Default||''):'';drawModels()};
+ $('effort').onchange=()=>{t.Effort=$('effort').value};
+ function source(){segments('source',[['manual','手动选账号'],['pool','API 服务账号池']],t.Pool?'pool':'manual',v=>{t.Pool=v==='pool';source();requestPreview()});$('picker').hidden=t.Pool;$('poolInfo').textContent=t.Pool?`运行时使用插件账号池，当前 ${(state.Pool||[]).length} 个账号。`:'';drawModels()}source();
+ picker($('picker'),t.IDs,()=>{drawModels();requestPreview()});
  function schedule(){segments('kind',Object.entries(kinds),t.Kind,v=>{t.Kind=v;t.Next=0;t.Resets={};schedule();requestPreview()});
  const timed=['daily','weekly'].includes(t.Kind);
  $('schedule').innerHTML=(t.Kind==='weekly'?'<div class="field">每周执行日<div class="row" id="days"></div></div>':'')+
@@ -81,7 +108,7 @@ function picker(box,selected,onChange){
  const fillFilters=()=>{selects[0].innerHTML=options([['','全部套餐'],...[...new Set(accountList.map(a=>quotas()[a.ID]?.Plan).filter(Boolean))].map(v=>[v,v])],plan);selects[1].innerHTML=options([['','全部标签'],...[...new Set(accountList.flatMap(a=>tags(a.ID)))].map(v=>[v,v])],tag)};
  function filtered(){return accountList.filter(a=>(a.Email+' '+a.Label).toLowerCase().includes(query.toLowerCase())&&(!plan||quotas()[a.ID]?.Plan===plan)&&(!tag||tags(a.ID).includes(tag)))}
  function draw(){const list=filtered();const pages=Math.max(1,Math.ceil(list.length/size));page=Math.max(0,Math.min(page,pages-1));get('[data-count]').textContent=`筛选 ${list.length} 个账号 · 已选择 ${selected.length} 个`;get('[data-page]').textContent=`${page+1} / ${pages}`;get('[data-prev]').disabled=page===0;get('[data-next]').disabled=page===pages-1;
- get('[data-list]').innerHTML=list.slice(page*size,(page+1)*size).map(a=>{const q=quotas()[a.ID];return `<article class="account ${selected.includes(a.ID)?'chosen':''}"><label><input type="checkbox" data-id="${esc(a.ID)}" ${selected.includes(a.ID)?'checked':''} ${a.Disabled&&!selected.includes(a.ID)?'disabled':''}> <strong>${esc(a.Email)}</strong></label><small>${esc([a.Label,q?.Plan,...tags(a.ID),a.Disabled?'不可用':''].filter(Boolean).join(' · '))}</small><small>主窗口 ${q?.Primary?esc(q.Primary.Remaining)+'%':'—'} · 次窗口 ${q?.Secondary?esc(q.Secondary.Remaining)+'%':'—'}</small>${button('刷新额度',`data-quota="${esc(a.ID)}" ${a.Disabled?'disabled':''}`)}</article>`}).join('')||'<small>没有匹配的账号。</small>'}
+ get('[data-list]').innerHTML=list.slice(page*size,(page+1)*size).map(a=>{const q=quotas()[a.ID];return `<article class="account ${selected.includes(a.ID)?'chosen':''}"><label><input type="checkbox" data-id="${esc(a.ID)}" ${selected.includes(a.ID)?'checked':''} ${a.Disabled&&!selected.includes(a.ID)?'disabled':''}> <strong>${esc(a.Email)}</strong></label><small>${esc([a.Label,q?.Plan,...tags(a.ID),a.Disabled?'已停用':a.Unavailable?'暂不可用，可加入任务':''].filter(Boolean).join(' · '))}</small><small>主窗口 ${q?.Primary?esc(q.Primary.Remaining)+'%':'—'} · 次窗口 ${q?.Secondary?esc(q.Secondary.Remaining)+'%':'—'}</small>${button('刷新额度',`data-quota="${esc(a.ID)}" ${a.Disabled?'disabled':''}`)}</article>`}).join('')||'<small>没有匹配的账号。</small>'}
  get('input').oninput=e=>{query=e.target.value;page=0;draw()};selects[0].onchange=e=>{plan=e.target.value;page=0;draw()};selects[1].onchange=e=>{tag=e.target.value;page=0;draw()};
  get('[data-all]').onclick=()=>{const ids=filtered().filter(a=>!a.Disabled).map(a=>a.ID);const all=ids.every(i=>selected.includes(i));for(const id of ids){if(all)selected.splice(selected.indexOf(id),1);else if(!selected.includes(id))selected.push(id)}draw();onChange()};
  get('[data-list]').onchange=e=>{const id=e.target.dataset.id;if(!id)return;if(e.target.checked&&!selected.includes(id))selected.push(id);else if(!e.target.checked)selected.splice(selected.indexOf(id),1);draw();onChange()};
@@ -100,10 +127,12 @@ function picker(box,selected,onChange){
 $('create').onclick=guarded(()=>openTask());
 $('pool').onclick=guarded(async()=>{accountList=await api('accounts');const ids=[...(state.Pool||[])];open('API 服务账号池与标签','<p class="muted">使用账号池的任务在触发时读取此处成员。</p><div id="members"></div><hr><h3>账号标签</h3><select id="tagAccount"></select>'+field('标签（逗号分隔）',input('tagText','text',''))+button('保存标签','id="applyTag"'),()=>api('pool',{IDs:ids}));picker($('members'),ids,()=>{});
  $('tagAccount').innerHTML=options(accountList.map(a=>[a.ID,a.Email]),'');const show=()=>{$('tagText').value=(state.Tags?.[$('tagAccount').value]||[]).join(', ')};show();$('tagAccount').onchange=show;$('applyTag').onclick=guarded(async()=>{const id=$('tagAccount').value;if(!id)return;await api('tags',{ID:id,Tags:$('tagText').value.split(/[,，]/)});await reload();picker($('members'),ids,()=>{});$('error').textContent='标签已保存'})});
-$('models').onclick=()=>{const list=structuredClone(state.Presets);open('模型预设','<div id="presets"></div>'+button('添加预设','id="add"'),()=>api('presets',{Presets:list}));
- function draw(){$('presets').innerHTML=list.map((p,i)=>`<article data-i="${i}"><div class="grid">${field('显示名称',input('pn'+i,'text',p.Name,'data-k="Name"'))}${field('实际模型 ID',input('pm'+i,'text',p.Model,'data-k="Model"'))}</div>${field('可用推理强度（逗号分隔）',input('pe'+i,'text',(p.Efforts||[]).join(', '),'data-k="Efforts"'))}${field('默认推理强度',input('pd'+i,'text',p.Default,'data-k="Default"'))}${button('删除预设','data-del')}</article>`).join('')}
+$('models').onclick=guarded(async()=>{const directory=await systemModels(await api('accounts'));const list=structuredClone(state.Presets);open('模型预设','<h3>从系统模型添加预设</h3><div class="grid" id="catalog"></div><small>'+esc(directory.note)+'</small>'+button('添加勾选的模型','id="add"')+'<div id="presets"></div>',()=>api('presets',{Presets:list}));
+ function draw(){
+ $('catalog').innerHTML=directory.all.filter(m=>!list.some(p=>p.Model===m)).map(m=>`<label><input type="checkbox" value="${esc(m)}"> ${esc(m)}</label>`).join('')||'<small>暂无可添加的模型。</small>';
+ $('presets').innerHTML=list.map((p,i)=>`<article data-i="${i}"><div class="grid">${field('显示名称',input('pn'+i,'text',p.Name,'data-k="Name"'))}${field('实际模型 ID',`<select data-k="Model">${options([...new Set([p.Model,...directory.all])].map(m=>[m,m]),p.Model)}</select>`)}</div>${field('可用推理强度（逗号分隔）',input('pe'+i,'text',(p.Efforts||[]).join(', '),'data-k="Efforts"'))}${field('默认推理强度',input('pd'+i,'text',p.Default,'data-k="Default"'))}${button('删除预设','data-del')}</article>`).join('')}
  $('presets').oninput=e=>{const k=e.target.dataset.k;if(k)list[Number(e.target.closest('article').dataset.i)][k]=k==='Efforts'?e.target.value.split(/[,，]/).map(s=>s.trim()):e.target.value};$('presets').onclick=e=>{if(e.target.hasAttribute('data-del')){list.splice(Number(e.target.closest('article').dataset.i),1);draw()}};
- $('add').onclick=()=>{list.push({Name:'',Model:'',Efforts:['low','medium','high'],Default:'medium'});draw()};draw()};
+ $('add').onclick=()=>{for(const box of $('catalog').querySelectorAll(':checked')){if(!list.some(p=>p.Model===box.value))list.push({Name:box.value,Model:box.value,Efforts:['','low','medium','high','xhigh'],Default:''})}draw()};draw()});
 setInterval(guarded(async()=>{if(!document.hidden&&!modal.open&&!$('dashboard').hidden){const expanded=new Set([...document.querySelectorAll('#runs details[open]')].map(d=>d.dataset.run));await reload();for(const d of document.querySelectorAll('#runs details'))d.open=expanded.has(d.dataset.run)}}),5000);
 // Some CPA deployments authenticate the management resources through a same-origin proxy.
 connect().catch(()=>{});

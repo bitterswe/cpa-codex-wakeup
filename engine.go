@@ -19,6 +19,7 @@ import (
 const managementPath = "/plugins/cpa-codex-wakeup/tasks"
 
 type Task struct {
+	Models                                                           []string `json:",omitempty"`
 	ID, Name, Model, Effort, Prompt, Kind, Clock, Zone, Window, Mode string
 	Enabled, Pool                                                    bool
 	IDs                                                              []string
@@ -32,7 +33,11 @@ type Preset struct {
 	Name, Model, Default string
 	Efforts              []string
 }
-type Record struct{ Account, Status string }
+type Record struct {
+	Account, Status string
+	Model           string  `json:",omitempty"`
+	Reply           *string `json:",omitempty"`
+}
 type Run struct {
 	ID, Name, Source, Status string
 	At, Deadline             int64
@@ -410,38 +415,50 @@ func (e *Engine) worker() {
 			}
 			list, listErr := accounts()
 			successful := 0
+			models := run.Task.Models
+			if len(models) == 0 {
+				models = []string{run.Task.Model}
+			}
+		targets:
 			for _, id := range run.Targets {
-				if e.ctx.Err() != nil {
-					return
-				}
-				label := id
-				status := "账号已移除或停用"
-				a := slices.IndexFunc(list, func(a Account) bool { return a.ID == id })
-				if listErr != nil {
-					status = listErr.Error()
-				} else if a >= 0 && !list[a].Disabled {
-					label = list[a].Email
-					if err := activate(e.ctx, id, run.Task); err != nil {
-						status = err.Error()
-					} else {
-						status = "success"
-						successful++
+				for _, model := range models {
+					if e.ctx.Err() != nil {
+						return
 					}
-				}
-				if err = e.update(func(s *State) error {
-					for i := range s.Runs {
-						if s.Runs[i].ID == run.ID {
-							s.Runs[i].Records = append(s.Runs[i].Records, Record{label, status})
-							break
+					label := id
+					reply := ""
+					status := "账号已移除或停用"
+					a := slices.IndexFunc(list, func(a Account) bool { return a.ID == id })
+					if listErr != nil {
+						status = listErr.Error()
+					} else if a >= 0 && !list[a].Disabled {
+						label = list[a].Email
+						request := run.Task
+						request.Model = model
+						var sendErr error
+						reply, sendErr = activate(e.ctx, id, request)
+						if sendErr != nil {
+							status = sendErr.Error()
+						} else {
+							status = "success"
+							successful++
 						}
 					}
-					return nil
-				}); err != nil {
-					break
+					if err = e.update(func(s *State) error {
+						for i := range s.Runs {
+							if s.Runs[i].ID == run.ID {
+								s.Runs[i].Records = append(s.Runs[i].Records, Record{Account: label, Status: status, Model: model, Reply: &reply})
+								break
+							}
+						}
+						return nil
+					}); err != nil {
+						break targets
+					}
 				}
 			}
 			final := "failed"
-			if successful == len(run.Targets) {
+			if successful == len(run.Targets)*len(models) {
 				final = "success"
 			} else if successful > 0 {
 				final = "partial"
@@ -581,6 +598,24 @@ func management(req resourceRequest) (int, string) {
 		return problem(400, errors.New("无效操作"))
 	}
 	switch cmd.Action {
+	case "models":
+		var catalog struct {
+			Credentials []struct {
+				Index    string   `json:"auth_index"`
+				Provider string   `json:"provider"`
+				Models   []string `json:"models"`
+			} `json:"credentials"`
+		}
+		if err := hostCall("host.auth.models", struct{}{}, &catalog); err != nil {
+			return problem(501, err)
+		}
+		byAccount := map[string][]string{}
+		for _, c := range catalog.Credentials {
+			if strings.EqualFold(c.Provider, "codex") {
+				byAccount[c.Index] = unique(c.Models)
+			}
+		}
+		return jsonReply(200, byAccount)
 	case "accounts":
 		list, err := accounts()
 		if err != nil {
@@ -614,6 +649,18 @@ func management(req resourceRequest) (int, string) {
 		switch cmd.Action {
 		case "save":
 			t := cmd.Task
+			if t.Models != nil {
+				t.Models = unique(t.Models)
+				if len(t.Models) == 0 {
+					return errors.New("请选择模型")
+				}
+				for _, model := range t.Models {
+					if len(model) > 256 {
+						return errors.New("模型 ID 过长")
+					}
+				}
+				t.Model = t.Models[0]
+			}
 			if err := validate(t); err != nil {
 				return err
 			}
