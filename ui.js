@@ -12,9 +12,16 @@ const options=(pairs,value)=>pairs.map(([v,label])=>`<option value="${esc(v)}" $
 const field=(name,control)=>`<label class="field">${name}${control}</label>`;
 const button=(label,attrs='')=>`<button type="button" ${attrs}>${esc(label)}</button>`;
 const input=(id,type,value,extra='')=>`<input id="${id}" type="${type}" value="${esc(value)}" ${extra}>`;
+const statusSwitch=(enabled,label,attrs='')=>`<button type="button" class="task-switch" role="switch" aria-label="${esc(label)}" aria-checked="${!!enabled}" ${attrs}></button>`;
+const sessionKey='cpa-codex-wakeup.management-key';
+function forgetKey(){key='';try{sessionStorage.removeItem(sessionKey)}catch{}}
+function requireLogin(){
+ forgetKey();returnToTask=null;if(modal.open)modal.close();$('dashboard').hidden=true;$('toolbar').hidden=true;$('retry').hidden=true;$('login').hidden=false;
+}
 async function api(action,data={}){
+ const sentKey=key;
  const res=await fetch('/v0/management/plugins/cpa-codex-wakeup/tasks',{method:action?'POST':'GET',cache:'no-store',headers:{...(key?{Authorization:'Bearer '+key}:{}),'Content-Type':'application/json'},...(action?{body:JSON.stringify({Action:action,...data})}:{})});
- if(!res.ok){let detail;try{detail=(await res.json()).error}catch{}throw Error(detail||`CPA HTTP ${res.status}`)}return res.json();
+ if(!res.ok){let detail;try{detail=(await res.json()).error}catch{}if((res.status===401||res.status===403)&&sentKey===key)requireLogin();throw Error(detail||`CPA HTTP ${res.status}`)}return res.json();
 }
 function report(err){(modal.open?$('error'):$('notice')).textContent=err.message}
 function taskModels(t){return t.Models?.length?t.Models:[t.Model].filter(Boolean)}
@@ -41,14 +48,14 @@ function summary(t){
 }
 function render(){
  const tasks=state.Tasks||[];$('count').textContent=`${tasks.length} 个任务`;
- $('tasks').innerHTML=tasks.map(t=>`<article><header><h3>${esc(t.Name)} <small>${t.Enabled?'已启用':'已停用'}</small></h3><div class="row">${[['run','立即执行'],['edit','编辑'],['toggle',t.Enabled?'停用':'启用'],['delete','删除']].map(([a,n])=>button(n,`data-action="${a}" data-id="${esc(t.ID)}"`)).join('')}</div></header><p>${esc(summary(t))} · ${esc(t.Zone)} · ${t.Pool?'API 服务账号池':`${t.IDs?.length||0} 个账号`}</p><small>${esc(taskModels(t).join('、'))} · ${esc(t.Effort||'默认强度')} · ${t.Mode==='confirm'?'执行前确认':'直接执行'}</small></article>`).join('')||'<p class="muted">尚无任务，点击「新建任务」设置首次唤醒。</p>';
+ $('tasks').innerHTML=tasks.map(t=>`<article><header><h3>${esc(t.Name)} <small>${t.Enabled?'已启用':'已停用'}</small></h3><div class="row">${statusSwitch(t.Enabled,`${t.Name} 启用状态`,`data-action="toggle" data-id="${esc(t.ID)}"`)}${[['run','立即执行'],['edit','编辑'],['delete','删除']].map(([a,n])=>button(n,`data-action="${a}" data-id="${esc(t.ID)}"`)).join('')}</div></header><p>${esc(summary(t))} · ${esc(t.Zone)} · ${t.Pool?'API 服务账号池':`${t.IDs?.length||0} 个账号`}</p><small>${esc(taskModels(t).join('、'))} · ${esc(t.Effort||'默认强度')} · ${t.Mode==='confirm'?'执行前确认':'直接执行'}</small></article>`).join('')||'<p class="muted">尚无任务，点击「新建任务」设置首次唤醒。</p>';
  $('runs').innerHTML=[...(state.Runs||[])].reverse().map(r=>`<details data-run="${esc(r.ID)}"><summary>${esc(r.Name)} · ${esc(statuses[r.Status]||r.Status)} · ${esc(when(r.At,r.Task.Zone))}</summary><small>${esc(kinds[r.Source]||'手动执行')} · ${esc(taskModels(r.Task).join('、'))}</small><h4>任务提示词</h4><pre>${esc(r.Task.Prompt?.trim()?r.Task.Prompt:'hi')}</pre>${(r.Records||[]).map(x=>`<article><strong>${esc(x.Account)} · ${esc(x.Model||r.Task.Model)} · ${esc(statuses[x.Status]||x.Status)}</strong><h4>回答</h4><pre>${esc(x.Reply??'旧版本未保存回答内容。')||'未收到文本回答。'}</pre></article>`).join('')}</details>${r.Status==='pending'?`<div class="row"><small>确认截止 ${esc(when(r.Deadline,r.Task.Zone))}</small>${button('确认执行',`data-action="approve" data-id="${esc(r.ID)}"`)}${button('跳过',`data-action="skip" data-id="${esc(r.ID)}"`)}</div>`:''}`).join('')||'<p class="muted">暂无执行记录。</p>';
 }
 $('dashboard').onclick=guarded(async ev=>{const b=ev.target.closest('[data-action]');if(!b||b.disabled)return;const {action,id}=b.dataset;
  if(action==='edit')return openTask(state.Tasks.find(t=>t.ID===id));if(action==='delete'&&!confirm('删除这个唤醒任务？'))return;
  b.disabled=true;try{await api(action,{ID:id});await reload()}finally{b.disabled=false}});
-async function connect(){await reload();$('login').hidden=true;$('dashboard').hidden=false;$('toolbar').hidden=false;$('key').value=''}
-$('connect').onsubmit=guarded(async ev=>{ev.preventDefault();key=$('key').value.trim();await connect()});
+async function connect(){await reload();$('login').hidden=true;$('retry').hidden=true;$('dashboard').hidden=false;$('toolbar').hidden=false;$('key').value=''}
+$('connect').onsubmit=guarded(async ev=>{ev.preventDefault();key=$('key').value.trim();await connect();if($('remember').checked){try{sessionStorage.setItem(sessionKey,key)}catch{$('notice').textContent='浏览器限制了标签页存储，本次连接仍然有效。'}}});
 for(const b of document.querySelectorAll('[data-close]'))b.onclick=()=>modal.close();
 function open(title,html,save){$('title').textContent=title;fields.innerHTML=html;$('error').textContent='';saveAction=save;if(!modal.open)modal.showModal();modal.scrollTop=0}
 $('save').onclick=guarded(async()=>{if(busy)return;busy=true;$('save').disabled=true;try{await saveAction();await reload();modal.close()}finally{busy=false;$('save').disabled=false}});
@@ -68,7 +75,10 @@ async function openTask(task){
  bind('name','Name');bind('zone','Zone');bind('timeout','Timeout',true);bind('prompt','Prompt');
  $('editModels').onclick=()=>{returnToTask=t;$('models').onclick()};
  function segments(id,entries,val,fn){const box=$(id);box.innerHTML=entries.map(([v,l])=>button(l,`data-v="${v}" aria-pressed="${v===val}"`)).join('');box.onclick=e=>{const b=e.target.closest('button');if(b)fn(b.dataset.v)}}
- function status(){segments('enabled',[['yes','启用'],['no','停用']],t.Enabled?'yes':'no',v=>{t.Enabled=v==='yes';status()})}status();
+ $('enabled').innerHTML=statusSwitch(t.Enabled,'任务启用状态')+'<span></span>';
+ const toggle=$('enabled').querySelector('button'),statusText=$('enabled').querySelector('span');
+ function showStatus(){toggle.setAttribute('aria-checked',String(t.Enabled));statusText.textContent=t.Enabled?'已启用':'已停用'}
+ toggle.onclick=()=>{t.Enabled=!t.Enabled;showStatus()};showStatus();
  function drawModels(){
   const ids=t.Pool?(state.Pool||[]):t.IDs;
   const available=directory.all.filter(m=>ids.every(id=>directory.catalog[id]?.includes(m)));
@@ -134,5 +144,12 @@ $('models').onclick=guarded(async()=>{const directory=await systemModels(await a
  $('presets').oninput=e=>{const k=e.target.dataset.k;if(k)list[Number(e.target.closest('article').dataset.i)][k]=k==='Efforts'?e.target.value.split(/[,，]/).map(s=>s.trim()):e.target.value};$('presets').onclick=e=>{if(e.target.hasAttribute('data-del')){list.splice(Number(e.target.closest('article').dataset.i),1);draw()}};
  $('add').onclick=()=>{for(const box of $('catalog').querySelectorAll(':checked')){if(!list.some(p=>p.Model===box.value))list.push({Name:box.value,Model:box.value,Efforts:['','low','medium','high','xhigh'],Default:''})}draw()};draw()});
 setInterval(guarded(async()=>{if(!document.hidden&&!modal.open&&!$('dashboard').hidden){const expanded=new Set([...document.querySelectorAll('#runs details[open]')].map(d=>d.dataset.run));await reload();for(const d of document.querySelectorAll('#runs details'))d.open=expanded.has(d.dataset.run)}}),5000);
-// Some CPA deployments authenticate the management resources through a same-origin proxy.
-connect().catch(()=>{});
+async function reconnect(){
+ $('retry').hidden=true;$('notice').textContent='正在连接 CPA…';
+ try{await connect()}catch(err){
+  if($('login').hidden){$('retry').hidden=false;report(err)}
+  else{$('notice').textContent='CPA 需要管理密钥。'}
+ }
+}
+try{key=sessionStorage.getItem(sessionKey)||''}catch{}
+$('retry').onclick=reconnect;reconnect();
