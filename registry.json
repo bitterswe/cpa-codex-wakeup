@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "cpa-codex-wakeup",
+      "name": "Codex 唤醒任务",
+      "description": "在 CPA 管理界面查看 Codex 唤醒任务插件版本。",
+      "author": "bitterswe",
+      "repository": "https://github.com/bitterswe/cpa-codex-wakeup",
+      "tags": ["Codex", "Management"]
+    }
+  ]
+}
