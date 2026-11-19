@@ -427,11 +427,11 @@ func (e *Engine) worker() {
 					}
 					label := id
 					reply := ""
-					status := "账号已移除或停用"
+					status := "CPA 账号列表中未找到该账号"
 					a := slices.IndexFunc(list, func(a Account) bool { return a.ID == id })
 					if listErr != nil {
 						status = listErr.Error()
-					} else if a >= 0 && !list[a].Disabled {
+					} else if a >= 0 {
 						label = list[a].Email
 						request := run.Task
 						request.Model = model
@@ -524,7 +524,7 @@ func (e *Engine) quotaLoop() {
 					if e.ctx.Err() != nil {
 						return
 					}
-					if ids[a.ID] && !a.Disabled {
+					if ids[a.ID] {
 						_ = e.refresh(e.ctx, a.ID)
 					}
 				}
@@ -634,8 +634,8 @@ func management(req resourceRequest) (int, string) {
 		if err != nil {
 			return problem(502, err)
 		}
-		if !slices.ContainsFunc(list, func(a Account) bool { return a.ID == cmd.ID && !a.Disabled }) {
-			return problem(400, errors.New("账号不可用"))
+		if !slices.ContainsFunc(list, func(a Account) bool { return a.ID == cmd.ID }) {
+			return problem(400, errors.New("CPA 账号列表中未找到该账号"))
 		}
 		if err = e.refresh(e.ctx, cmd.ID); err != nil {
 			return problem(502, err)

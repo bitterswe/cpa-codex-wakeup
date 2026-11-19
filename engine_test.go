@@ -105,7 +105,7 @@ func TestProvider(t *testing.T) {
 	http.DefaultTransport = tr
 	hostCall = func(method string, payload, target any) error {
 		if method == "host.auth.list" {
-			return json.Unmarshal([]byte(`{"files":[{"auth_index":"one","provider":"codex","unavailable":true},{"auth_index":"two","provider":"other"},{"auth_index":"three","type":"codex","account_type":"api_key"}]}`), target)
+			return json.Unmarshal([]byte(`{"files":[{"auth_index":"one","provider":"codex","disabled":true,"unavailable":true},{"auth_index":"two","provider":"other"},{"auth_index":"three","type":"codex","account_type":"api_key"}]}`), target)
 		}
 		if payload.(map[string]string)["auth_index"] != "one" {
 			t.Fatal("wrong credential index")
@@ -113,7 +113,7 @@ func TestProvider(t *testing.T) {
 		return json.Unmarshal([]byte(`{"json":{"tokens":{"access_token":"fixture","account_id":"demo","proxy_url":"direct"}}}`), target)
 	}
 	list, err := accounts()
-	if err != nil || len(list) != 1 || list[0].ID != "one" || list[0].Disabled || !list[0].Unavailable {
+	if err != nil || len(list) != 1 || list[0].ID != "one" || !list[0].Disabled || !list[0].Unavailable {
 		t.Fatal(list, err)
 	}
 	q, err := readQuota(context.Background(), "one")
@@ -128,9 +128,12 @@ func TestProvider(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{ctx: ctx, file: filepath.Join(t.TempDir(), "state.json")}
-	task := Task{Model: "working", Models: []string{"working", "failed"}, Effort: "medium", Mode: "auto"}
-	if err := queue(&e.state, task, []string{"one"}, "manual", time.Now().Unix()); err != nil {
-		t.Fatal(err)
+	now := time.Now()
+	task := Task{Model: "working", Models: []string{"working", "failed"}, Effort: "medium", Mode: "auto", Kind: "interval", Hours: 1, Enabled: true, IDs: []string{"one"}, Next: now.Unix()}
+	e.state.Tasks = []Task{task}
+	e.tick(now)
+	if len(e.state.Runs) != 1 {
+		t.Fatal("scheduled wakeup was not queued")
 	}
 	e.wg.Add(1)
 	go e.worker()

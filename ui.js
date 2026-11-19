@@ -28,7 +28,7 @@ function taskModels(t){return t.Models?.length?t.Models:[t.Model].filter(Boolean
 async function systemModels(accounts){
  let catalog={};
  try{catalog=await api('models')}catch{/* Older CPA builds expose the credential catalog over the management API. */}
- const missing=accounts.filter(a=>!a.Disabled&&!Array.isArray(catalog[a.ID]));
+ const missing=accounts.filter(a=>!Array.isArray(catalog[a.ID]));
  let cursor=0,failed=0;
  async function load(){while(cursor<missing.length){
   const a=missing[cursor++];
@@ -37,7 +37,7 @@ async function systemModels(accounts){
   }catch{failed++}
  }}
  await Promise.all(Array.from({length:Math.min(4,missing.length)},load));
- const all=[...new Set(accounts.filter(a=>!a.Disabled).flatMap(a=>catalog[a.ID]||[]))].sort();
+ const all=[...new Set(accounts.flatMap(a=>catalog[a.ID]||[]))].sort();
  return {all,catalog,note:failed?'部分账号的模型目录读取失败，可重新打开编辑器重试。':all.length?'':'CPA 尚未返回 Codex 模型。'};
 }
 function guarded(fn){return async(...args)=>{try{await fn(...args)}catch(err){report(err)}}}
@@ -118,15 +118,15 @@ function picker(box,selected,onChange){
  const fillFilters=()=>{selects[0].innerHTML=options([['','全部套餐'],...[...new Set(accountList.map(a=>quotas()[a.ID]?.Plan).filter(Boolean))].map(v=>[v,v])],plan);selects[1].innerHTML=options([['','全部标签'],...[...new Set(accountList.flatMap(a=>tags(a.ID)))].map(v=>[v,v])],tag)};
  function filtered(){return accountList.filter(a=>(a.Email+' '+a.Label).toLowerCase().includes(query.toLowerCase())&&(!plan||quotas()[a.ID]?.Plan===plan)&&(!tag||tags(a.ID).includes(tag)))}
  function draw(){const list=filtered();const pages=Math.max(1,Math.ceil(list.length/size));page=Math.max(0,Math.min(page,pages-1));get('[data-count]').textContent=`筛选 ${list.length} 个账号 · 已选择 ${selected.length} 个`;get('[data-page]').textContent=`${page+1} / ${pages}`;get('[data-prev]').disabled=page===0;get('[data-next]').disabled=page===pages-1;
- get('[data-list]').innerHTML=list.slice(page*size,(page+1)*size).map(a=>{const q=quotas()[a.ID];return `<article class="account ${selected.includes(a.ID)?'chosen':''}"><label><input type="checkbox" data-id="${esc(a.ID)}" ${selected.includes(a.ID)?'checked':''} ${a.Disabled&&!selected.includes(a.ID)?'disabled':''}> <strong>${esc(a.Email)}</strong></label><small>${esc([a.Label,q?.Plan,...tags(a.ID),a.Disabled?'已停用':a.Unavailable?'暂不可用，可加入任务':''].filter(Boolean).join(' · '))}</small><small>主窗口 ${q?.Primary?esc(q.Primary.Remaining)+'%':'—'} · 次窗口 ${q?.Secondary?esc(q.Secondary.Remaining)+'%':'—'}</small>${button('刷新额度',`data-quota="${esc(a.ID)}" ${a.Disabled?'disabled':''}`)}</article>`}).join('')||'<small>没有匹配的账号。</small>'}
+ get('[data-list]').innerHTML=list.slice(page*size,(page+1)*size).map(a=>{const q=quotas()[a.ID];return `<article class="account ${selected.includes(a.ID)?'chosen':''}"><label><input type="checkbox" data-id="${esc(a.ID)}" ${selected.includes(a.ID)?'checked':''}> <strong>${esc(a.Email)}</strong></label><small>${esc([a.Label,q?.Plan,...tags(a.ID),a.Disabled?'CPA 已停用，仍可唤醒':a.Unavailable?'暂不可用，可加入任务':''].filter(Boolean).join(' · '))}</small><small>主窗口 ${q?.Primary?esc(q.Primary.Remaining)+'%':'—'} · 次窗口 ${q?.Secondary?esc(q.Secondary.Remaining)+'%':'—'}</small>${button('刷新额度',`data-quota="${esc(a.ID)}"`)}</article>`}).join('')||'<small>没有匹配的账号。</small>'}
  get('input').oninput=e=>{query=e.target.value;page=0;draw()};selects[0].onchange=e=>{plan=e.target.value;page=0;draw()};selects[1].onchange=e=>{tag=e.target.value;page=0;draw()};
- get('[data-all]').onclick=()=>{const ids=filtered().filter(a=>!a.Disabled).map(a=>a.ID);const all=ids.every(i=>selected.includes(i));for(const id of ids){if(all)selected.splice(selected.indexOf(id),1);else if(!selected.includes(id))selected.push(id)}draw();onChange()};
+ get('[data-all]').onclick=()=>{const ids=filtered().map(a=>a.ID);const all=ids.every(i=>selected.includes(i));for(const id of ids){if(all)selected.splice(selected.indexOf(id),1);else if(!selected.includes(id))selected.push(id)}draw();onChange()};
  get('[data-list]').onchange=e=>{const id=e.target.dataset.id;if(!id)return;if(e.target.checked&&!selected.includes(id))selected.push(id);else if(!e.target.checked)selected.splice(selected.indexOf(id),1);draw();onChange()};
  get('[data-list]').onclick=guarded(async e=>{const id=e.target.dataset.quota;if(!id)return;e.target.disabled=true;try{await api('quota',{ID:id});await reload();fillFilters();onChange()}finally{draw()}});
  async function loadVisible(){
   if(loading)return;loading=true;
   try{while(box.isConnected&&modal.open&&!box.hidden){
-   const account=filtered().slice(page*size,(page+1)*size).find(a=>!a.Disabled&&!attempted.has(a.ID)&&(!quotas()[a.ID]||quotas()[a.ID].Checked<Date.now()/1000-300));
+   const account=filtered().slice(page*size,(page+1)*size).find(a=>!attempted.has(a.ID)&&(!quotas()[a.ID]||quotas()[a.ID].Checked<Date.now()/1000-300));
    if(!account)break;attempted.add(account.ID);
    try{const q=await api('quota',{ID:account.ID});(state.Quotas??={})[account.ID]=q;if(box.isConnected){fillFilters();draw();onChange()}}catch{/* Manual refresh exposes the provider error and allows retry. */}
   }}finally{loading=false}
