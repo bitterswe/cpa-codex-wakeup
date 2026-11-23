@@ -12,6 +12,28 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;background:#182333;
 button[data-action=delete],button[data-del]{background:#b42336;border-color:#d44b5c;color:white}
 button[data-action=delete]:hover,button[data-del]:hover{background:#981d2d}
 @media(prefers-reduced-motion:reduce){.task-switch::after{transition:none}}
+#runs summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 4px 6px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  list-style: none;
+}
+#runs summary::-webkit-details-marker { display: none; }
+#runs summary::before {
+  content: "";
+  flex: 0 0 auto;
+  border-block: 8px solid transparent;
+  border-left: 14px solid currentColor;
+}
+#runs details[open] > summary::before { transform: rotate(90deg); }
+#runs summary:focus-visible { outline: 2px solid #76b9ff; outline-offset: 1px; }
 </style>
 <main><header><div><h1>Codex 唤醒任务</h1><small>v{{VERSION}}</small></div><div class="row" id="toolbar" hidden><button id="pool">账号池与标签</button><button id="models">模型预设</button><button class="primary" id="create">新建任务</button></div></header>
 <p class="err" id="notice" role="alert"></p>
